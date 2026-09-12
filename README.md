@@ -332,29 +332,6 @@ data/processed/tfidf_logistic_regression_results.txt
 
 These files are generated locally and excluded from Git.
 
-## 16. One-Week Next Plan
-
-### Day 1
-Expand manually labeled data around minority classes and confusion boundaries.
-
-### Day 2
-Compare lexical classification with semantic embeddings and hierarchical routing.
-
-### Day 3
-Calibrate intent probabilities and re-evaluate the escalation operating point.
-
-### Day 4
-Retrieve multiple historical candidates and rerank them using semantic and intent compatibility.
-
-### Day 5
-Run the LLM-as-judge harness with a valid external evaluation account and measure judge-human agreement.
-
-### Day 6
-Run regression analysis and inspect new failure clusters.
-
-### Day 7
-Freeze the taxonomy, evaluation set, thresholds, and final report.
-
 ## 17. Documentation
 
 | File | Purpose |
