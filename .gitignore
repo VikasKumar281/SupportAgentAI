@@ -1,4 +1,3 @@
-@"
 venv/
 .venv/
 .env
@@ -12,4 +11,3 @@ outputs/
 
 *.joblib
 *.csv
-"@ | Set-Content .gitignore

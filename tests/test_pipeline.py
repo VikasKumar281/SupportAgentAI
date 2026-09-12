@@ -1,64 +1,108 @@
-"""
-Basic sanity tests. Run with: pytest tests/ -v
-These are NOT the evaluation harness (that's eval/run_eval.py) — they just
-guard against the pipeline crashing or returning malformed output.
-"""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import pandas as pd
-import pytest
 
-from src.config import CONVERSATIONS_CSV, MODEL_PATH
-from src.escalation import decide_escalation
-from src.intents import silver_label
-from src.retrieval import HistoricalResolutionRetriever
+from escalation_gate import decide_escalation, detect_risk
 
 
-@pytest.fixture(scope="module")
-def conversations():
-    if not CONVERSATIONS_CSV.exists():
-        pytest.skip("Run scripts/run_all.sh (or data prep steps) before tests.")
-    return pd.read_csv(CONVERSATIONS_CSV)
+ROOT = Path(__file__).resolve().parent.parent
+CONVERSATIONS = ROOT / "data" / "processed" / "amazonhelp_conversations.csv"
+GOLDEN = ROOT / "data" / "processed" / "golden_set_reviewed.csv"
+MODEL = ROOT / "models" / "intent_classifier.joblib"
 
 
-def test_silver_label_returns_valid_intent():
-    from src.config import INTENTS
-    assert silver_label("please refund my order") in INTENTS
-    assert silver_label("where is my package") in INTENTS
+def test_conversation_dataset_exists():
+    assert CONVERSATIONS.exists()
+    df = pd.read_csv(CONVERSATIONS, nrows=5)
+    required = {
+        "customer_tweet_id",
+        "brand_tweet_id",
+        "customer_text",
+        "brand_response",
+    }
+    assert required.issubset(df.columns)
 
 
-def test_escalation_risk_keyword_always_escalates():
-    result = decide_escalation("I'm calling my lawyer about this fraud", "billing_issue", 0.99, 0.9)
-    assert result["escalate"] is True
-    assert result["rule"] == "risk_keyword"
+def test_golden_set_exists():
+    assert GOLDEN.exists()
+    df = pd.read_csv(GOLDEN)
+    assert len(df) == 200
+    assert "gold_intent" in df.columns
+    assert "gold_escalate" in df.columns
 
 
-def test_escalation_low_confidence_escalates():
-    result = decide_escalation("hello", "general_feedback", 0.2, 0.9)
-    assert result["escalate"] is True
-    assert result["rule"] == "low_confidence_classification"
+def test_classifier_model_exists():
+    assert MODEL.exists()
 
 
-def test_escalation_confident_grounded_low_risk_auto_handles():
-    result = decide_escalation("what's the status of my order", "order_status", 0.9, 0.9)
-    assert result["escalate"] is False
+def test_security_risk_escalates():
+    escalate, reason = decide_escalation(
+        "My account was hacked",
+        "account_security",
+        0.95,
+        0.80,
+    )
+    assert escalate is True
+    assert reason == "security_or_account_risk"
 
 
-def test_retrieval_returns_k_results(conversations):
-    retriever = HistoricalResolutionRetriever(conversations)
-    results = retriever.top_k("where is my package, it's late", k=3)
-    assert len(results) <= 3
-    assert all("similarity" in r for r in results)
+def test_payment_risk_escalates():
+    escalate, reason = decide_escalation(
+        "I see an unauthorized charge on my card",
+        "payment_billing",
+        0.95,
+        0.80,
+    )
+    assert escalate is True
+    assert reason == "payment_or_financial_risk"
 
 
-def test_pipeline_end_to_end(conversations):
-    if not MODEL_PATH.exists():
-        pytest.skip("Train the baseline classifier first (src/classify_baseline.py).")
-    from src.pipeline import AgentPipeline
-    pipeline = AgentPipeline(conversations_df=conversations)
-    result = pipeline.handle("where is my order #123456, it's 5 days late")
-    assert "predicted_intent" in result
-    assert "draft_reply" in result
-    assert isinstance(result["escalate"], (bool,))
+def test_explicit_human_request_escalates():
+    escalate, reason = decide_escalation(
+        "I want to speak to a human agent",
+        "customer_service_complaint",
+        0.95,
+        0.80,
+    )
+    assert escalate is True
+    assert reason == "explicit_human_request"
+
+
+def test_low_confidence_escalates():
+    escalate, reason = decide_escalation(
+        "Where is my order?",
+        "order_delivery",
+        0.10,
+        0.80,
+    )
+    assert escalate is True
+    assert reason == "low_intent_confidence"
+
+
+def test_low_similarity_escalates():
+    escalate, reason = decide_escalation(
+        "I need help with something unusual",
+        "other_non_actionable",
+        0.80,
+        0.05,
+    )
+    assert escalate is True
+    assert reason == "low_historical_similarity"
+
+
+def test_confident_grounded_low_risk_auto_handles():
+    escalate, reason = decide_escalation(
+        "Where is my order?",
+        "order_delivery",
+        0.90,
+        0.80,
+    )
+    assert escalate is False
+    assert reason == "safe_to_auto_handle"
+
+
+def test_detect_risk_returns_none_for_normal_message():
+    assert detect_risk("Where is my package?") is None
