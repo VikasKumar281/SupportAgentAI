@@ -9,7 +9,7 @@ from escalation_gate import decide_escalation
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-GOLDEN_PATH = os.path.join(BASE_DIR, "data", "processed", "golden_set_reviewed.csv")
+GOLDEN_PATH = os.path.join(BASE_DIR, "data", "processed", "golden_set_human_review_200.csv")
 CLASSIFIER_PATH = os.path.join(BASE_DIR, "models", "intent_classifier.joblib")
 VECTOR_PATH = os.path.join(BASE_DIR, "models", "leakage_free_vectorizer.joblib")
 MATRIX_PATH = os.path.join(BASE_DIR, "models", "leakage_free_matrix.joblib")
@@ -66,8 +66,8 @@ for i, index in enumerate(retrieval_indices):
     retrieved_customer_texts.append(retrieved_customer)
     retrieved_responses.append(retrieved_response)
 
-gold_intents = golden["gold_intent"].astype(str)
-gold_escalations = golden["gold_escalate"].astype(bool)
+gold_intents = golden["human_intent"].astype(str)
+gold_escalations = golden["human_escalate"].astype(bool)
 
 intent_accuracy = accuracy_score(gold_intents, predicted_intents)
 intent_macro_f1 = f1_score(gold_intents, predicted_intents, average="macro", zero_division=0)
@@ -94,6 +94,8 @@ auto_handle_rate = 1 - np.mean(predicted_escalations)
 
 results = golden.copy()
 
+results["gold_intent"] = gold_intents
+results["gold_escalate"] = gold_escalations
 results["predicted_intent"] = predicted_intents
 results["intent_confidence"] = intent_confidences
 results["retrieved_customer_text"] = retrieved_customer_texts
@@ -109,14 +111,14 @@ output_path = os.path.join(
     BASE_DIR,
     "data",
     "processed",
-    "agent_evaluation_200.csv"
+    "agent_evaluation_human_gold_200.csv"
 )
 
 results.to_csv(output_path, index=False)
 
 print()
-print("Agent Evaluation")
-print("================")
+print("Final Human-Gold Agent Evaluation")
+print("=================================")
 print()
 print(f"Examples evaluated: {len(results)}")
 print()

@@ -6,164 +6,70 @@
 
 SupportAgentAI is an end-to-end customer-support automation system built around historical customer-support conversations.
 
-The system is designed to solve four connected problems:
+It addresses four connected problems:
 
-1. Understand the customer's primary support intent.
-2. Retrieve relevant historical support interactions.
-3. Decide whether the request is safe to handle automatically.
-4. Prepare a grounded support response or an internal draft for human review.
+1. identify the customer's primary support intent
+2. retrieve relevant historical support interactions
+3. decide whether the request can be auto-handled or should receive human review
+4. prepare a grounded response or internal draft
 
-The implementation uses a compact ten-intent taxonomy, TF-IDF with Logistic Regression for intent classification, TF-IDF cosine-similarity retrieval for historical grounding, deterministic risk detection, confidence-based escalation, retrieval-quality thresholds, leakage-aware evaluation, automated tests, and per-example failure analysis.
+The implementation uses a ten-intent taxonomy, TF-IDF + Logistic Regression classification, TF-IDF cosine retrieval, deterministic risk detection, confidence-based escalation, retrieval-based escalation, leakage-aware evaluation, automated tests, and per-example failure analysis.
 
-The central design principle is conservative automation:
+The final human-gold benchmark contains 200 manually labeled examples.
 
-> The system should automate when evidence and confidence are sufficient, and prefer human review when the request is sensitive or uncertain.
+## 1. Problem Framing
 
-The current end-to-end evaluation reports:
+Customer-support requests repeat operational patterns such as delivery delays, returns, refunds, billing problems, account issues, subscriptions, digital content, technical issues, and support complaints.
 
-| Metric | Result |
-|---|---:|
-| Intent Accuracy | 53.00% |
-| Intent Macro F1 | 52.81% |
-| Escalation Precision | 39.26% |
-| Escalation Recall | 95.52% |
-| Escalation F1 | 55.65% |
-| Auto-Handle Rate | 18.50% |
-| Escalation Rate | 81.50% |
-
-The most important finding is that the current system is conservative but over-escalates. Most escalations are caused by low classifier confidence, which makes better labeled data and stronger confidence calibration the highest-value next improvements.
-
----
-
-# 1. Problem Framing
-
-Customer-support systems receive many requests that are variations of previously seen problems.
-
-Typical requests include:
-
-- delivery delays
-- tracking questions
-- missing packages
-- returns
-- refunds
-- billing problems
-- account access
-- security concerns
-- subscription questions
-- digital-content problems
-- device issues
-- incorrect or damaged products
-- customer-service complaints
-
-A useful automation system should not simply generate a response based on the wording of a new message.
-
-The system should first determine what the customer needs.
-
-The problem can therefore be represented as:
+The intended workflow is:
 
 ```text
 Customer Message
-       |
-       v
-What is the customer asking?
-       |
-       v
-Can historical evidence be found?
-       |
-       v
-Is the request safe to automate?
-       |
-       v
-What response should be prepared?
+      |
+      v
+Intent Classification
+      |
+      v
+Intent + Confidence
+      |
+      v
+Historical Retrieval
+      |
+      v
+Risk Detection
+      |
+      v
+Escalation Decision
+      |
+      +----------------------+
+      |                      |
+      v                      v
+Human Review          Auto Handling
+      |                      |
+      v                      v
+Internal Draft         Grounded Reply
 ```
 
-This leads to a controlled pipeline rather than an unconstrained response-generation system.
+The system is designed to decide what to do before deciding what to say.
 
----
-
-# 2. Dataset and Scope
+## 2. Dataset and Scope
 
 The project uses the Twitter Customer Support Conversations dataset.
 
-The raw source contains approximately 2.8 million tweets and includes conversation relationship fields that make it possible to connect customer messages with support responses.
+The raw source contains approximately 2.8 million tweets.
 
-The source schema includes:
-
-| Field | Purpose |
-|---|---|
-| `tweet_id` | Unique tweet identifier |
-| `author_id` | Author identifier |
-| `inbound` | Message direction |
-| `created_at` | Timestamp |
-| `text` | Tweet text |
-| `response_tweet_id` | Response relationship |
-| `in_response_to_tweet_id` | Parent-message relationship |
-
-A single support environment, AmazonHelp, was selected for the main project.
-
-This keeps the retrieval corpus internally consistent and avoids mixing response styles and operational contexts from unrelated support accounts.
-
----
-
-# 3. Data Preparation
-
-The raw dataset was transformed into direct customer-to-support response pairs.
-
-The processing flow was:
-
-```text
-Raw Tweets
-    |
-    v
-Support Account Filtering
-    |
-    v
-Conversation Relationship Resolution
-    |
-    v
-Customer/Support Pair Extraction
-    |
-    v
-Incomplete Record Removal
-    |
-    v
-Deduplication
-    |
-    v
-Processed Conversation Corpus
-```
+The selected support environment is AmazonHelp.
 
 The extraction produced approximately:
 
-```text
-168,823
-```
+| Stage | Records |
+|---|---:|
+| Direct customer/support pairs before final cleaning | 168,823 |
+| Usable original pairs after cleaning/deduplication | 149,680 |
 
-direct customer/support pairs before final cleaning and deduplication.
+The processed records contain customer text, historical support response, identifiers, timestamps, and support-account information.
 
-After cleaning and deduplication, approximately:
-
-```text
-149,680
-```
-
-usable original pairs remained.
-
-The processed dataset is stored as:
-
-```text
-data/processed/amazonhelp_conversations.csv
-```
-
-Each record contains the customer message and the corresponding historical support response.
-
-This structure is particularly useful because it supports both classification and retrieval.
-
----
-
-# 4. Intent Taxonomy
-
-A ten-class operational taxonomy was created.
+## 3. Intent Taxonomy
 
 | Intent | Meaning |
 |---|---|
@@ -175,238 +81,97 @@ A ten-class operational taxonomy was created.
 | `digital_content` | Digital books, video, music and digital content |
 | `device_technical` | Device and technical troubleshooting |
 | `product_order_issue` | Wrong, damaged or defective products |
-| `customer_service_complaint` | Complaints about the support experience |
+| `customer_service_complaint` | Complaints about support experience |
 | `other_non_actionable` | Unclear or non-actionable messages |
 
-The taxonomy was intentionally kept compact.
+The taxonomy is intentionally compact so that each class remains operationally meaningful.
 
-The objective was to create categories that are useful for:
+## 4. Classification and Baselines
 
-- routing
-- retrieval
-- escalation
-- response handling
-- evaluation
-
-A smaller operational taxonomy also makes classification errors easier to interpret.
-
----
-
-# 5. Intent Classification
-
-The intent classifier uses a conventional text-classification pipeline:
+The classifier is:
 
 ```text
 Customer Message
-       |
-       v
-TF-IDF Vectorization
-       |
-       v
+      |
+      v
+TF-IDF
+      |
+      v
 Logistic Regression
-       |
-       v
-Intent Prediction
-       |
-       v
-Confidence Score
+      |
+      v
+Intent + Confidence
 ```
 
-The development data was split into:
+Development configuration:
 
 ```text
-Training:      350
-Validation:     75
-Test:           75
-```
-
-The classifier configuration selected during development was:
-
-```text
-Algorithm: Logistic Regression
-Features: TF-IDF
 N-gram range: (1, 1)
 Minimum document frequency: 1
 C: 0.5
 ```
 
-The validation Macro F1 was:
+Development split:
 
 ```text
-0.3379
+Training: 350
+Validation: 75
+Test: 75
 ```
 
-The held-out development test results were:
+### Results
 
-| Metric | Score |
-|---|---:|
-| Accuracy | 45.33% |
-| Macro F1 | 34.96% |
+| Model | Accuracy | Macro F1 |
+|---|---:|---:|
+| Majority baseline | 36.00% | 5.29% |
+| TF-IDF + Logistic Regression | 45.33% | 34.96% |
 
-The classifier is useful as a baseline and as a component of the larger pipeline, but the results also show that the taxonomy contains several overlapping categories that are difficult to distinguish with lexical features alone.
+The learned classifier improves over the trivial development baseline.
 
----
+These are development-stage results and are separate from the final human-gold evaluation.
 
-# 6. Baseline Comparison
+## 5. Historical Retrieval
 
-Two baselines were used to establish the expected performance range.
+For a new customer message, the system searches historical customer messages using TF-IDF cosine similarity.
 
-## 6.1 Majority Baseline
-
-The trivial baseline always predicts the most frequent intent:
-
-```text
-order_delivery
-```
-
-Results:
-
-| Metric | Score |
-|---|---:|
-| Accuracy | 36.00% |
-| Macro F1 | 5.29% |
-
-This establishes a lower bound.
-
-The extremely low Macro F1 demonstrates that a majority-only strategy does not provide balanced performance across the taxonomy.
-
----
-
-## 6.2 TF-IDF + Logistic Regression
-
-The simple learned baseline uses TF-IDF with Logistic Regression.
-
-Results:
-
-| Metric | Score |
-|---|---:|
-| Accuracy | 45.33% |
-| Macro F1 | 34.96% |
-
-The learned classifier improves substantially over the majority baseline.
-
-However, the two baselines and the end-to-end benchmark use different development/evaluation stages, so their numbers should not be interpreted as a single controlled benchmark comparison.
-
----
-
-# 7. Historical Retrieval
-
-The response-drafting system uses historical support conversations as evidence.
-
-The retrieval pipeline is:
+The associated historical support response becomes the grounding source for the draft.
 
 ```text
 New Customer Message
-       |
-       v
+      |
+      v
 TF-IDF Representation
-       |
-       v
+      |
+      v
 Cosine Similarity
-       |
-       v
-Historical Customer Messages
-       |
-       v
-Best Matching Interaction
-       |
-       v
+      |
+      v
+Best Historical Interaction
+      |
+      v
 Historical Support Response
 ```
 
-The retrieval corpus contains approximately 168k historical customer messages.
+Historical responses are cleaned to remove unnecessary platform-specific artifacts such as handles, shortened URLs, signatures, and irrelevant trailing fragments.
 
-For every incoming request, the system finds the most similar historical customer message.
+## 6. Retrieval Leakage Prevention
 
-The support response associated with that historical interaction is then used as the grounding source for the response draft.
+Evaluation examples are excluded from the retrieval corpus before constructing the final evaluation index.
 
-This provides traceability because a developer can inspect the historical interaction behind a generated draft.
-
----
-
-# 8. Retrieval Leakage Prevention
-
-Retrieval evaluation has a specific leakage risk.
-
-If an evaluation example is present in the retrieval corpus, the system may retrieve the same example.
-
-That produces an artificially strong similarity score.
-
-The problematic setup is:
-
-```text
-Evaluation Message
-       |
-       v
-Same Message in Retrieval Index
-       |
-       v
-Self Match
-       |
-       v
-Artificially High Similarity
-```
-
-To prevent this, a separate leakage-free retrieval index was created.
-
-The evaluation examples are removed before constructing the evaluation retrieval corpus.
-
-The resulting leakage-free index contains:
+The leakage-free index contains:
 
 ```text
 Documents: 152,813
 Features: 200,000
 ```
 
-This is an important evaluation safeguard.
+This prevents direct self-retrieval from artificially inflating similarity.
 
----
+Retrieval similarity remains only a supporting signal because lexical similarity does not guarantee semantic relevance.
 
-# 9. Response Drafting
+## 7. Escalation Design
 
-The system does not generate a response independently of historical evidence.
-
-Instead:
-
-```text
-Customer Message
-       |
-       v
-Intent Classification
-       |
-       v
-Historical Retrieval
-       |
-       v
-Relevant Historical Response
-       |
-       v
-Response Cleaning
-       |
-       v
-Draft
-```
-
-Historical social-media support messages may contain platform-specific artifacts.
-
-The response-cleaning stage removes unnecessary elements such as:
-
-- handles
-- shortened URLs
-- historical signatures
-- irrelevant trailing fragments
-
-This makes the resulting draft more suitable for review.
-
-When the escalation gate decides that human review is required, the draft is explicitly treated as an internal draft rather than an automatic customer-facing response.
-
----
-
-# 10. Escalation Design
-
-The escalation system is one of the most important components of the project.
-
-It combines four signals:
+The decision layer combines:
 
 ```text
 Risk Signals
@@ -423,223 +188,51 @@ Escalation Decision
 
 The system escalates when:
 
-1. A high-risk pattern is detected.
-2. The predicted intent is high risk.
-3. Intent confidence is too low.
-4. Historical retrieval similarity is too low.
+1. a strong risk pattern is detected
+2. the predicted intent is `account_security` or `payment_billing`
+3. intent confidence is below `0.20`
+4. retrieval similarity is below `0.20`
 
-This separates:
+Risk detection covers security, financial, legal, and explicit human-agent requests.
 
-```text
-Can I classify this?
-```
+Escalated responses are internal drafts for human review.
 
-from:
+## 8. Final Human-Gold Evaluation
 
-```text
-Should I automate this?
-```
+A fixed benchmark of 200 examples was manually labeled by the author using the labeling guide.
 
-That distinction is important for support systems.
+All ten intents are represented.
 
----
-
-# 11. Risk Detection
-
-The risk detector explicitly handles several sensitive situations.
-
-## Security Risk
-
-Examples:
-
-- hacked account
-- compromised account
-- unauthorized access
-- identity theft
-- suspicious account activity
-
-## Financial Risk
-
-Examples:
-
-- unauthorized charge
-- unknown charge
-- fraudulent charge
-- duplicate charge
-
-## Legal Risk
-
-Examples:
-
-- lawyer
-- attorney
-- lawsuit
-- legal action
-- court
-
-## Explicit Human Request
-
-Examples:
-
-- speak to a human
-- speak to an agent
-- talk to a representative
-- contact a supervisor
-
-These requests are escalated independently of normal classification confidence.
-
----
-
-# 12. High-Risk Intents
-
-The following intents are treated conservatively:
-
-```text
-account_security
-payment_billing
-```
-
-This reflects the potential sensitivity of account and financial requests.
-
-A historically similar response does not automatically make a sensitive request safe to automate.
-
-The escalation layer therefore acts as a policy boundary around the classifier and retrieval system.
-
----
-
-# 13. Confidence Threshold
-
-The selected intent-confidence threshold is:
-
-```text
-0.20
-```
-
-Requests below this confidence are escalated.
-
-The reasoning is straightforward:
-
-```text
-Low confidence
-      |
-      v
-Higher uncertainty
-      |
-      v
-Human review
-```
-
-This is especially important for short, ambiguous, or linguistically unusual customer messages.
-
----
-
-# 14. Retrieval Threshold
-
-The selected retrieval-similarity threshold is:
-
-```text
-0.20
-```
-
-If the best historical match falls below this threshold, the request is escalated.
-
-The reasoning is:
-
-```text
-Weak historical evidence
-          |
-          v
-Uncertain grounding
-          |
-          v
-Human review
-```
-
-Retrieval similarity is not treated as a standalone quality metric.
-
-It is used as one signal in the broader automation decision.
-
----
-
-# 15. Threshold Tuning
-
-Multiple confidence and retrieval thresholds were evaluated.
-
-The selected configuration is:
-
-| Parameter | Value |
-|---|---:|
-| Intent confidence threshold | 0.20 |
-| Retrieval similarity threshold | 0.20 |
-
-The resulting escalation performance is:
+### Final Results
 
 | Metric | Result |
 |---|---:|
-| Precision | 39.26% |
-| Recall | 95.52% |
-| F1 | 55.65% |
-| Escalation Rate | 81.50% |
-
-The selected policy intentionally favors recall.
-
-This means the system is willing to send more requests to human review in order to reduce the chance of automatically handling a request that should have been escalated.
-
----
-
-# 16. End-to-End Evaluation
-
-The complete system was evaluated on 200 examples.
-
-Results:
-
-| Metric | Result |
-|---|---:|
-| Intent Accuracy | 53.00% |
-| Intent Macro F1 | 52.81% |
-| Escalation Precision | 39.26% |
-| Escalation Recall | 95.52% |
-| Escalation F1 | 55.65% |
+| Intent Accuracy | 49.00% |
+| Intent Macro F1 | 49.75% |
+| Escalation Precision | 15.95% |
+| Escalation Recall | 100.00% |
+| Escalation F1 | 27.51% |
 | Auto-Handle Rate | 18.50% |
 | Escalation Rate | 81.50% |
 
-The system made:
+The system correctly classified 98 of 200 intent labels.
 
-```text
-163 escalation decisions
-37 automatic-handling decisions
-```
+It auto-handled 37 examples and escalated 163.
 
-The current operating point is therefore strongly conservative.
-
----
-
-# 17. Escalation Breakdown
-
-The 163 escalations were caused by:
+### Escalation Breakdown
 
 | Reason | Count |
 |---|---:|
-| Low intent confidence | 123 |
-| High-risk intent | 22 |
-| Low historical similarity | 11 |
-| Legal/high-risk signal | 4 |
-| Security/account risk | 2 |
-| Payment/financial risk | 1 |
+| `low_intent_confidence` | 123 |
+| `high_risk_intent` | 22 |
+| `low_historical_similarity` | 11 |
+| `legal_or_high_risk` | 4 |
+| `security_or_account_risk` | 2 |
+| `payment_or_financial_risk` | 1 |
 
-The most important observation is that:
+The dominant escalation driver is low classifier confidence.
 
-```text
-123 / 163
-```
-
-escalations were caused by low intent confidence.
-
-This means classifier uncertainty is currently the dominant factor limiting automatic handling.
-
----
-
-# 18. Representative End-to-End Example
+## 9. Representative End-to-End Example
 
 Input:
 
@@ -647,683 +240,176 @@ Input:
 Where is my order? It was supposed to arrive yesterday.
 ```
 
-The system produced:
+System output:
 
 ```text
-Intent:
-order_delivery
-
-Intent Confidence:
-0.1388
-
-Retrieval Similarity:
-0.6653
-
-Escalate:
-True
-
-Reason:
-low_intent_confidence
+Intent: order_delivery
+Intent Confidence: 0.1388
+Retrieval Similarity: 0.6653
+Escalate: True
+Reason: low_intent_confidence
 ```
 
-The retrieved historical response produced a cleaned internal draft:
+Draft:
 
 ```text
 Oh no! I'm sorry to hear that. What is the last tracking update on the order?
 ```
 
-The important behavior is that the historical match was reasonably strong, but the request was still escalated because intent confidence was below the configured threshold.
+The historical match is reasonably strong, but the system still escalates because intent confidence is below the safety threshold.
 
-This demonstrates the safety-first decision structure.
+## 10. Top Five Failure Modes
 
----
+### 1. Excessive Escalation
 
-# 19. Failure Mode 1 — Excessive Escalation
+123 of 163 final escalations were caused by low intent confidence.
 
-### Observation
+**Hypothesis:** the classifier has limited labeled training data relative to the diversity of the support corpus, especially for short and ambiguous messages.
 
-The largest current weakness is excessive escalation.
+**Next step:** increase labeled data and calibrate confidence before relaxing thresholds.
 
-Most escalations are triggered by:
+### 2. Delivery vs Product Confusion
 
-```text
-low_intent_confidence
-```
+`order_delivery` and `product_order_issue` share vocabulary such as order, item, package, and product.
 
-### Evidence
+The key distinction is whether the customer is waiting for delivery or reporting a problem with the product.
 
-```text
-123 of 163 escalations
-```
+**Next step:** add boundary examples and consider hierarchical classification.
 
-were caused by low classifier confidence.
+### 3. Returns/Refunds vs Payment/Billing
 
-### Hypothesis
+Money-related language can make `returns_refunds` and `payment_billing` difficult to separate.
 
-The classifier has limited labeled training data relative to the diversity of the support corpus.
+**Next step:** add more outcome-focused boundary examples.
 
-Short customer messages are particularly difficult because they may contain very few discriminative words.
+### 4. Other/Non-Actionable vs Actionable Intents
 
-### Improvement
+Short or conversational messages can lack enough information for reliable routing.
 
-Increase labeled training data, especially for:
+**Next step:** expand representative examples and improve short-message handling.
 
-- minority intents
-- ambiguous cases
-- short messages
-- commonly confused categories
+### 5. Lexical Retrieval Is Not Semantic Relevance
 
-Confidence calibration should also be added before lowering the escalation threshold.
+High TF-IDF similarity can still produce a superficially similar historical interaction that is not the best evidence.
 
----
+**Next step:** use semantic embeddings, multiple candidates, and reranking with intent compatibility.
 
-# 20. Failure Mode 2 — Delivery vs Product Issues
+## 11. What Is Misleading About My Headline Number?
 
-The classifier can confuse:
+The headline **49.00% intent accuracy** is not a 49% automation success rate.
 
-```text
-order_delivery
-```
+Only 18.50% of the final benchmark was auto-handled.
 
-with:
+The escalation layer achieved 100.00% recall but only 15.95% precision, showing that the current system is highly conservative and over-escalates.
 
-```text
-product_order_issue
-```
+The benchmark contains 200 examples and uses one human annotator, so the result should not be presented as a production estimate.
 
-Both can contain terms such as:
+A more accurate description is:
 
-- order
-- package
-- item
-- product
-- delivery
+> SupportAgentAI is a measurable support triage and response-drafting prototype, not a production-ready autonomous support system.
 
-The important distinction is the customer's underlying problem.
-
-If the issue is:
-
-```text
-Where is my package?
-```
-
-the intent is delivery.
-
-If the package arrived but:
-
-```text
-The product is damaged.
-```
-
-the intent is a product issue.
-
-### Improvement
-
-Add more boundary examples and consider hierarchical classification.
-
-A broad routing stage could first determine:
-
-```text
-Shipping
-Product
-Financial
-Account
-Digital
-Technical
-```
-
-and a second stage could classify the specific intent.
-
----
-
-# 21. Failure Mode 3 — Refund vs Billing
-
-The classifier can confuse:
-
-```text
-returns_refunds
-```
-
-with:
-
-```text
-payment_billing
-```
-
-because both categories can contain financial language.
-
-The key distinction is:
-
-```text
-Returns/refunds
-=
-money expected back
-```
-
-versus:
-
-```text
-Payment/billing
-=
-money charged or payment processing problem
-```
-
-### Improvement
-
-Increase examples covering:
-
-- unexpected charges
-- duplicate charges
-- refund requests
-- refund delays
-- return-related refunds
-- payment failures
-
----
-
-# 22. Failure Mode 4 — Device vs Digital Content
-
-Technical vocabulary can occur in both:
-
-```text
-device_technical
-```
-
-and:
-
-```text
-digital_content
-```
-
-A customer may describe a content problem through the device being used.
-
-### Improvement
-
-Use semantic representations and product/entity context so that the system can distinguish:
-
-```text
-Problem with device
-```
-
-from:
-
-```text
-Problem with content accessed through device
-```
-
----
-
-# 23. Failure Mode 5 — Generic Historical Responses
-
-Some historical support responses are short and repetitive.
-
-This creates a retrieval limitation.
-
-A high lexical similarity score does not necessarily mean the historical response is the best response for the new customer.
-
-Therefore:
-
-```text
-High lexical similarity
-```
-
-does not guarantee:
-
-```text
-High semantic relevance
-```
-
-### Improvement
-
-Use a two-stage retrieval architecture:
-
-```text
-Semantic Retrieval
-       |
-       v
-Top K Candidates
-       |
-       v
-Reranking
-       |
-       v
-Best Grounding Example
-```
-
-The reranker should consider the relationship between:
-
-- customer problem
-- predicted intent
-- historical customer message
-- historical support response
-
----
-
-# 24. Confusion Matrix Insights
-
-The current evaluation shows that some categories are substantially easier than others.
-
-Examples from the 200-example evaluation include:
-
-| Intent | Correct |
-|---|---:|
-| `order_delivery` | 17 / 35 |
-| `customer_service_complaint` | 16 / 28 |
-| `returns_refunds` | 13 / 19 |
-| `digital_content` | 11 / 21 |
-| `device_technical` | 9 / 19 |
-| `subscription_prime` | 9 / 13 |
-| `account_security` | 8 / 13 |
-| `payment_billing` | 7 / 15 |
-| `product_order_issue` | 5 / 18 |
-
-These results show that the most difficult categories are not necessarily the smallest categories.
-
-The main issue is overlap in language and the limited amount of labeled data available for learning fine distinctions.
-
----
-
-# 25. What Is Misleading About the Headline Number?
-
-The headline end-to-end intent accuracy is:
-
-```text
-53.0%
-```
-
-It is useful, but it should not be interpreted as a production accuracy estimate.
-
-The current 200-example evaluation set was prepared and reviewed during development.
-
-The classifier development labels were also created as part of the development process.
-
-Therefore, the result should primarily be used to:
-
-- compare future versions
-- detect regressions
-- identify weaknesses
-- guide engineering decisions
-
-A stronger benchmark would require an independently hand-labeled and frozen evaluation set.
-
-This distinction is important because a benchmark is only as reliable as its labels and evaluation protocol.
-
----
-
-# 26. Why Accuracy Alone Is Not Enough
-
-Customer-support intent data is not perfectly balanced.
-
-A system can obtain reasonable accuracy while performing poorly on minority classes.
-
-For this reason, the project reports:
-
-```text
-Accuracy
-Macro F1
-Per-class performance
-Confusion matrix
-```
-
-Macro F1 is especially useful because it gives every intent equal importance.
-
-For example, a model that performs very well on `order_delivery` but poorly on `payment_billing` should not appear strong merely because delivery examples are frequent.
-
----
-
-# 27. Why Escalation Recall Matters
-
-Escalation has a different risk profile from ordinary classification.
-
-A false negative means:
-
-```text
-Request should have been reviewed
-                |
-                v
-Request was automatically handled
-```
-
-A false positive means:
-
-```text
-Normal request
-      |
-      v
-Human review unnecessarily
-```
-
-The first error can be more serious.
-
-Therefore, the system currently favors escalation recall.
-
-The measured recall is:
-
-```text
-95.52%
-```
-
-The trade-off is lower precision:
-
-```text
-39.26%
-```
-
-This explains the high escalation rate.
-
----
-
-# 28. Engineering Assessment
-
-The current architecture has several strong properties.
-
-## Strong Separation of Responsibilities
-
-Classification, retrieval, risk detection and escalation are independent components.
-
-## Grounded Response Drafting
-
-Historical interactions provide concrete response evidence.
-
-## Conservative Decision Policy
-
-Sensitive and uncertain requests are not automatically treated as safe.
-
-## Leakage-Aware Retrieval
-
-Evaluation examples are excluded from the leakage-free retrieval index.
-
-## Reproducible Scripts
-
-Major stages are implemented as executable scripts.
-
-## Automated Regression Tests
-
-The core decision logic is covered by ten tests.
-
----
-
-# 29. Current Limitations
+## 12. Evaluation Limitations
 
 The main limitations are:
 
-### Limited Labeled Dataset
+- 200-example benchmark size
+- single-annotator human gold
+- no inter-annotator agreement measurement
+- no completed external LLM-as-judge run
+- lexical rather than semantic retrieval
+- conservative escalation policy
+- small development training set
 
-More labeled examples are needed for robust classification.
+The LLM-as-judge harness is implemented, but the external run was not completed because the required API account lacked sufficient credits.
 
-### Lexical Retrieval
+No judge score or judge-human agreement number is reported.
 
-TF-IDF is sensitive to word overlap and does not fully capture semantic similarity.
+## 13. Engineering Validation
 
-### High Escalation Rate
+The repository contains automated regression tests for dataset/model availability and the main escalation and handling behaviors.
 
-The current safety policy escalates 81.5% of evaluated examples.
-
-### Confidence Calibration
-
-Raw classifier confidence is useful as a signal but should be calibrated before being treated as a probability of correctness.
-
-### Evaluation Maturity
-
-The evaluation benchmark should be strengthened through independent human annotation and agreement measurement.
-
-### No Live Customer Context
-
-The system does not directly query:
-
-- live order status
-- customer accounts
-- payment systems
-- inventory
-- shipping APIs
-
-Therefore, it prepares grounded responses from historical evidence rather than resolving live transactional issues.
-
----
-
-# 30. Recommended Next Architecture
-
-The next version should evolve from:
+Current result:
 
 ```text
-TF-IDF Classification
-+
-TF-IDF Retrieval
-+
-Rules
+10 passed
 ```
 
-toward:
+The project also preserves per-example evaluation outputs for confusion and failure analysis.
+
+## 14. One-Week Next Plan
+
+### Day 1 — Improve Labels
+
+Add more manually reviewed examples around minority classes and major confusion boundaries.
+
+### Day 2 — Improve Classification
+
+Compare TF-IDF with semantic embeddings and hierarchical routing.
+
+### Day 3 — Calibrate Confidence
+
+Calibrate intent probabilities and choose an operating point based on the cost of false escalation versus unsafe automation.
+
+### Day 4 — Improve Retrieval
+
+Retrieve multiple candidates and rerank them using semantic and intent compatibility.
+
+### Day 5 — Improve Response Evaluation
+
+Run the existing LLM-as-judge harness with an available external evaluation account and compute judge-human agreement.
+
+### Day 6 — Regression and Error Review
+
+Re-run the frozen human-gold benchmark, inspect failure clusters, and add regression tests for important cases.
+
+### Day 7 — Final Validation
+
+Freeze the taxonomy, evaluation set, thresholds, and report, then compare the next system version against the current baselines.
+
+## 15. Reproducibility
+
+Expected environment:
 
 ```text
-Semantic Intent Model
-        |
-        v
-Calibrated Confidence
-        |
-        v
-Semantic Retrieval
-        |
-        v
-Intent-Aware Reranking
-        |
-        v
-Grounded Response
-        |
-        v
-Policy Validation
-        |
-        v
-Automation / Human Review
+Python 3.13+
+Windows PowerShell
 ```
 
-The current modular architecture makes this migration possible without rewriting the entire system.
-
----
-
-# 31. One-Week Improvement Plan
-
-## Day 1 — Stronger Evaluation Set
-
-Create a larger independently reviewed evaluation set.
-
-Target:
+Dataset:
 
 ```text
-200-250 examples
+data/raw/twcs.csv
 ```
 
-Ensure coverage across all ten intents.
+Install:
 
-Include both common and difficult examples.
-
----
-
-## Day 2 — Human Agreement
-
-Have two reviewers independently label a calibration subset.
-
-Measure agreement.
-
-Investigate disagreements.
-
-Update the labeling guide where necessary.
-
----
-
-## Day 3 — Semantic Retrieval
-
-Introduce sentence embeddings.
-
-Compare:
-
-```text
-TF-IDF Retrieval
+```powershell
+python -m venv venv
+.env\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-with:
+Run:
 
-```text
-Semantic Retrieval
+```powershell
+python .\scripts\prepare_training_data.py
+python .\scripts	rain_intent_classifier.py
+python .\scriptsuild_retrieval_index.py
+python .\scripts\evaluate_agent.py
+python .\scriptsnalyze_failures.py
+python .\scripts\generate_failure_report.py
 ```
 
-using the same frozen evaluation set.
+Tests:
 
----
-
-## Day 4 — Intent-Aware Retrieval
-
-Use predicted intent to restrict or rerank historical candidates.
-
-This should reduce cross-category matches.
-
----
-
-## Day 5 — Response Evaluation
-
-Evaluate response drafts on:
-
-- relevance
-- groundedness
-- helpfulness
-- factual support
-- clarity
-
----
-
-## Day 6 — Confidence Calibration
-
-Calibrate classifier probabilities and re-evaluate escalation thresholds.
-
-The objective is:
-
-```text
-Lower unnecessary escalation
-+
-Maintain high escalation recall
+```powershell
+pytest -q
 ```
 
----
+## 16. Conclusion
 
-## Day 7 — Final Benchmark
+SupportAgentAI demonstrates a complete support-automation workflow rather than a standalone classifier.
 
-Freeze:
+Its strongest engineering properties are modular architecture, historical grounding, leakage-aware evaluation, explicit risk handling, conservative escalation, a human-gold benchmark, per-example failure analysis, automated tests, and transparent evaluation limitations.
 
-- taxonomy
-- training data
-- evaluation data
-- model
-- retrieval system
-- escalation policy
-- evaluation scripts
-
-Then run one final benchmark and record the results.
-
----
-
-# 32. Productionization Roadmap
-
-A production system would require additional infrastructure.
-
-Important future components include:
-
-- authenticated customer context
-- order-status APIs
-- account verification
-- payment-status APIs
-- policy validation
-- audit logging
-- rate limiting
-- monitoring
-- alerting
-- model versioning
-- data drift monitoring
-- response approval workflows
-
-The current project focuses on the core intelligence and decision layer.
-
----
-
-# 33. Final Recommendation
-
-The highest-value improvement is not simply replacing the classifier with a larger model.
-
-The current results indicate that the primary bottleneck is the quality and quantity of labeled data.
-
-The recommended order of work is:
-
-```text
-Better Evaluation Labels
-          |
-          v
-More Training Examples
-          |
-          v
-Better Intent Model
-          |
-          v
-Confidence Calibration
-          |
-          v
-Semantic Retrieval
-          |
-          v
-Better Response Reranking
-          |
-          v
-Lower Unnecessary Escalation
-```
-
-This sequence improves the measurement foundation before increasing system complexity.
-
----
-
-# 34. Conclusion
-
-SupportAgentAI demonstrates a complete architecture for grounded customer-support automation.
-
-The project combines:
-
-- real customer-support conversation data
-- structured preprocessing
-- operational intent classification
-- historical retrieval
-- leakage-aware evaluation
-- response drafting
-- risk detection
-- confidence-based escalation
-- retrieval-based escalation
-- automated tests
-- failure analysis
-
-The current system achieves:
-
-```text
-53.00% Intent Accuracy
-52.81% Intent Macro F1
-95.52% Escalation Recall
-55.65% Escalation F1
-18.50% Auto-Handle Rate
-```
-
-The strongest property is the conservative escalation behavior, particularly the high escalation recall.
-
-The largest weakness is excessive escalation caused by classifier uncertainty.
-
-The next iteration should therefore focus on improving labeled data, confidence calibration, semantic retrieval, and response reranking.
-
-The long-term objective is not maximum automation at any cost.
-
-The objective is:
-
-> Safe, grounded and measurable automation with clear human oversight whenever the system is uncertain.
-
----
-
-## Author
-
-**Vikas Kumar**
-
-Software Engineer | Full Stack Developer | Python | Machine Learning | Backend Systems
-
-SupportAgentAI represents a practical engineering approach to building reliable, interpretable and evaluation-driven customer-support automation.
+The main improvement target is reducing unnecessary escalation without weakening safety. That requires better labeled data, confidence calibration, stronger semantic classification, and better retrieval relevance.

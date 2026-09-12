@@ -2,415 +2,155 @@
 
 **Author:** Vikas Kumar
 
-This document records the major engineering decisions made while building SupportAgentAI.
+This document records the main engineering decisions behind SupportAgentAI and the reasoning behind them.
 
-The purpose of the decision log is to explain not only what was implemented, but why each architectural choice was made.
+## 1. Single Support Environment
 
----
+**Decision:** Use AmazonHelp as the primary support environment.
 
-## Decision 1 — Use a Single Support Environment
+**Reason:** A single support account keeps terminology, support style, and operational context consistent.
 
-### Decision
+## 2. Customer/Support Conversation Pairs
 
-Use AmazonHelp as the primary support environment.
+**Decision:** Represent each historical interaction as a customer message paired with its support response.
 
-### Reason
+**Reason:** Retrieval needs to answer: “What did support say when a similar customer request appeared?”
 
-The system needs historical responses that are relevant to the same support context.
+## 3. Compact Ten-Intent Taxonomy
 
-Using one support account reduces variation in:
+The system uses:
 
-- terminology
-- support style
-- operational context
-- response patterns
+1. `order_delivery`
+2. `returns_refunds`
+3. `payment_billing`
+4. `account_security`
+5. `subscription_prime`
+6. `digital_content`
+7. `device_technical`
+8. `product_order_issue`
+9. `customer_service_complaint`
+10. `other_non_actionable`
 
-### Result
+Ten classes provide a practical balance between useful routing detail and classification ambiguity.
 
-The historical retrieval corpus remains internally consistent.
+## 4. Separate Classification and Retrieval
 
----
+Classification answers what the customer is asking. Retrieval answers which historical interaction is relevant.
 
-## Decision 2 — Build Customer/Support Conversation Pairs
+Keeping them separate makes the system easier to evaluate and improve.
 
-### Decision
+## 5. Majority Baseline
 
-Represent each historical interaction as a customer message paired with its corresponding support response.
+A majority-class baseline was implemented first.
 
-### Reason
+| Metric | Result |
+|---|---:|
+| Accuracy | 36.00% |
+| Macro F1 | 5.29% |
 
-The retrieval system needs to answer:
+## 6. TF-IDF + Logistic Regression
 
-> What did support say when a similar customer request appeared?
+The primary classifier uses TF-IDF with Logistic Regression because it is fast, interpretable, reproducible, and suitable for short text.
 
-### Result
+Development results:
 
-Each historical record becomes:
+| Metric | Result |
+|---|---:|
+| Validation Macro F1 | 33.79% |
+| Test Accuracy | 45.33% |
+| Test Macro F1 | 34.96% |
 
-```text
-Customer Message
-       +
-Support Response
-```
+These are development results, separate from the final human-gold benchmark.
 
-This structure is directly useful for retrieval and response drafting.
+## 7. Confidence as a Safety Signal
 
----
+The escalation policy uses classifier confidence because uncertain predictions should not be automatically acted upon.
 
-## Decision 3 — Use a Compact Intent Taxonomy
-
-### Decision
-
-Use ten operational intents.
-
-### Reason
-
-A taxonomy with too many classes would increase ambiguity and make training difficult.
-
-A very small taxonomy would lose useful routing information.
-
-Ten categories provide a practical middle ground.
-
-### Result
-
-The final intents are:
+Current threshold:
 
 ```text
-order_delivery
-returns_refunds
-payment_billing
-account_security
-subscription_prime
-digital_content
-device_technical
-product_order_issue
-customer_service_complaint
-other_non_actionable
+Intent confidence < 0.20
 ```
 
----
+## 8. Explicit Risk Detection
 
-## Decision 4 — Separate Classification from Retrieval
-
-### Decision
-
-Keep intent classification and historical retrieval as separate components.
-
-### Reason
-
-Classification answers:
-
-> What is the customer asking?
-
-Retrieval answers:
-
-> What similar support interaction exists?
-
-Keeping them separate makes the system easier to debug and improve.
-
-### Result
-
-The classifier and retrieval index can be upgraded independently.
-
----
-
-## Decision 5 — Use a Majority Baseline
-
-### Decision
-
-Implement a majority-class baseline before training a real classifier.
-
-### Reason
-
-A simple baseline establishes the minimum expected performance.
-
-Without a baseline, model performance is difficult to interpret.
-
-### Result
-
-The majority baseline achieved:
-
-```text
-Accuracy: 36.00%
-Macro F1: 5.29%
-```
-
----
-
-## Decision 6 — Use TF-IDF + Logistic Regression
-
-### Decision
-
-Use TF-IDF features with Logistic Regression as the primary classifier.
-
-### Reason
-
-The approach is:
-
-- fast
-- transparent
-- reproducible
-- inexpensive
-- suitable for short text
-
-It provides a strong conventional baseline before moving to more complex semantic models.
-
-### Result
-
-Development test performance:
-
-```text
-Accuracy: 45.33%
-Macro F1: 34.96%
-```
-
----
-
-## Decision 7 — Use Confidence as a Safety Signal
-
-### Decision
-
-Use classifier confidence in the escalation policy.
-
-### Reason
-
-A classification system should not automatically act when it is uncertain.
-
-### Result
-
-Requests with confidence below 0.20 are escalated.
-
----
-
-## Decision 8 — Add Explicit Risk Detection
-
-### Decision
-
-Add deterministic detection for security, financial, legal and explicit-human-request signals.
-
-### Reason
-
-Certain requests require conservative handling even when a classifier is confident.
-
-### Result
+Deterministic detection covers security, financial, legal, and explicit human-agent requests.
 
 Sensitive requests are routed to human review.
 
----
+## 9. High-Risk Intents
 
-## Decision 9 — Treat Account Security and Payment as High-Risk Intents
+`account_security` and `payment_billing` are treated conservatively because they can involve sensitive account or financial consequences.
 
-### Decision
+## 10. Retrieval Similarity as a Safety Signal
 
-Escalate `account_security` and `payment_billing` conservatively.
+A weak historical match provides weaker grounding evidence.
 
-### Reason
+Current threshold:
 
-These categories may involve:
+```text
+Retrieval similarity < 0.20
+```
 
-- account verification
-- sensitive customer information
-- financial consequences
+## 11. Retrieval Leakage Prevention
 
-Historical response similarity alone is not enough to safely resolve such cases.
+The 200 final human-gold examples are excluded from the evaluation retrieval corpus.
 
----
+The leakage-free index contains:
 
-## Decision 10 — Add Retrieval Similarity to Escalation
+```text
+Documents: 152,813
+Features: 200,000
+```
 
-### Decision
+This prevents direct self-retrieval from inflating evaluation similarity.
 
-Use retrieval similarity as another safety signal.
+## 12. Historical Response Cleaning
 
-### Reason
+Historical responses are cleaned to remove platform-specific artifacts such as handles, shortened URLs, signatures, and irrelevant trailing fragments.
 
-A weak historical match should not be treated as strong grounding evidence.
+## 13. Escalated Cases Remain Internal Drafts
 
-### Result
-
-Requests with retrieval similarity below 0.20 are escalated.
-
----
-
-## Decision 11 — Prevent Retrieval Leakage
-
-### Decision
-
-Create a leakage-free retrieval index for evaluation.
-
-### Reason
-
-If evaluation examples remain inside the retrieval corpus, the system may retrieve itself.
-
-That would inflate retrieval similarity and produce misleading evaluation results.
-
-### Result
-
-Evaluation examples are excluded from the leakage-free retrieval index.
-
----
-
-## Decision 12 — Clean Historical Responses
-
-### Decision
-
-Remove platform-specific artifacts from historical responses before displaying them as drafts.
-
-### Reason
-
-Historical support messages can contain:
-
-- handles
-- shortened URLs
-- signatures
-- irrelevant trailing fragments
-
-These should not be copied directly into a new response.
-
-### Result
-
-The generated draft is cleaner and easier to review.
-
----
-
-## Decision 13 — Keep Escalated Responses as Internal Drafts
-
-### Decision
-
-When a request is escalated, show the response as an internal draft rather than an automatic customer response.
-
-### Reason
-
-The system has already determined that human review is required.
-
-### Result
-
-The workflow becomes:
+When human review is required, the historical response is treated as an internal draft rather than an automatic customer-facing response.
 
 ```text
 Escalated Request
-       |
-       v
+      |
+      v
 Internal Draft
-       |
-       v
+      |
+      v
 Human Review
 ```
 
----
+## 14. Threshold Tuning on Development Data
 
-## Decision 14 — Prioritize Escalation Recall
+The confidence and retrieval thresholds were selected using development data rather than the final human-gold labels.
 
-### Decision
+The selected values are:
 
-Tune escalation thresholds with recall as an important objective.
+| Parameter | Value |
+|---|---:|
+| Intent confidence threshold | 0.20 |
+| Retrieval similarity threshold | 0.20 |
 
-### Reason
+On the earlier development benchmark, this operating point produced 95.52% escalation recall, 39.26% precision, and 55.65% F1. These are development-tuning results and are not the final human-gold metrics.
 
-A missed sensitive request can be more costly than unnecessary human review.
+## 15. Per-Example Evaluation Data
 
-### Result
+Individual predictions, confidence values, retrieval scores, escalation decisions, and gold labels are preserved so that failures can be inspected rather than hidden by aggregate metrics.
 
-The selected policy achieves:
+## 16. Accuracy and Macro F1
 
-```text
-Escalation Recall: 95.52%
-```
+Both Accuracy and Macro F1 are reported. Macro F1 is important because it gives equal weight to each intent.
 
-while accepting a lower precision.
+## 17. Keep Generated Artifacts Outside Git
 
----
+Raw data, generated CSVs, and serialized models are excluded from Git because they are large and reproducible.
 
-## Decision 15 — Preserve Per-Example Evaluation Data
+## 18. Automated Regression Tests
 
-### Decision
-
-Store individual predictions and decisions.
-
-### Reason
-
-Aggregate metrics do not reveal why individual cases fail.
-
-Per-example results make it possible to inspect:
-
-- wrong intents
-- low confidence
-- weak retrieval
-- unnecessary escalation
-- missed escalation
-
-### Result
-
-Failure-analysis artifacts are generated under:
-
-```text
-data/processed/
-```
-
----
-
-## Decision 16 — Use Macro F1 Alongside Accuracy
-
-### Decision
-
-Report both Accuracy and Macro F1.
-
-### Reason
-
-Accuracy can hide poor performance on less frequent intents.
-
-Macro F1 gives each class equal importance.
-
-### Result
-
-The evaluation better reflects class-level weaknesses.
-
----
-
-## Decision 17 — Keep Generated Artifacts Outside Git
-
-### Decision
-
-Do not commit the raw dataset, generated CSVs or serialized model files.
-
-### Reason
-
-These artifacts can be large and are reproducible from the pipeline.
-
-### Result
-
-The repository remains focused on:
-
-- source code
-- tests
-- configuration
-- documentation
-
----
-
-## Decision 18 — Add Automated Regression Tests
-
-### Decision
-
-Create tests for the main escalation and pipeline behavior.
-
-### Reason
-
-Changes to the decision logic should not silently break safety behavior.
-
-### Result
-
-The current test suite contains ten tests covering:
-
-- dataset availability
-- model availability
-- security escalation
-- payment escalation
-- explicit human requests
-- low confidence
-- low retrieval similarity
-- safe handling
-- normal messages
+The current test suite contains ten tests covering dataset/model availability and the main escalation and handling behaviors.
 
 Current result:
 
@@ -418,38 +158,54 @@ Current result:
 10 passed
 ```
 
----
+## 19. Final Human-Gold Evaluation Set
+
+The final benchmark contains 200 manually labeled examples covering all ten intents.
+
+The author completed the human intent and escalation labels using the labeling guide.
+
+Final results:
+
+| Metric | Result |
+|---|---:|
+| Intent Accuracy | 49.00% |
+| Intent Macro F1 | 49.75% |
+| Escalation Precision | 15.95% |
+| Escalation Recall | 100.00% |
+| Escalation F1 | 27.51% |
+| Auto-Handle Rate | 18.50% |
+
+This is a single-annotator benchmark, so inter-annotator agreement is not claimed.
+
+## 20. LLM-as-Judge Integrity
+
+The LLM-as-judge harness is implemented, but an external evaluation run was not completed because the required API account lacked sufficient credits.
+
+No fabricated judge scores or judge-human agreement values are reported.
 
 # Decision Summary
 
-The overall architecture reflects the following priorities:
-
 ```text
 Historical Evidence
-        +
+       +
 Intent Understanding
-        +
+       +
 Risk Detection
-        +
+       +
 Confidence
-        |
-        v
+       |
+       v
 Safe Automation Decision
 ```
 
-The project deliberately favors a system that can explain why it acted or escalated.
-
----
+The architecture favors traceability and conservative automation.
 
 # Future Decisions to Revisit
 
-The following decisions should be revisited as the system grows:
-
 1. TF-IDF versus semantic embeddings.
-2. Flat intent classification versus hierarchical classification.
+2. Flat versus hierarchical classification.
 3. Single retrieval candidate versus multi-candidate reranking.
 4. Static thresholds versus calibrated confidence.
 5. Rule-based risk detection versus trained risk classification.
-6. Development evaluation versus independently reviewed benchmark.
-
-These are the highest-value architectural decisions for the next iteration.
+6. Larger human-gold coverage and multi-annotator agreement.
+7. Direct response-quality evaluation.
